@@ -1,6 +1,7 @@
 import os
 import sys
 import wave
+import array
 import shutil
 import threading
 import subprocess
@@ -8,7 +9,6 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
 
-import numpy as np
 import soundcard as sc
 
 
@@ -24,7 +24,6 @@ def find_ffmpeg() -> str | None:
     if os.path.isfile(bundled_ffmpeg):
         return bundled_ffmpeg
 
-    # กรณี PyInstaller แบบ --onefile ที่แตกไฟล์ไว้ใน _MEIPASS
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         temp_ffmpeg = os.path.join(meipass, "ffmpeg.exe")
@@ -32,6 +31,18 @@ def find_ffmpeg() -> str | None:
             return temp_ffmpeg
 
     return shutil.which("ffmpeg")
+
+
+def float_samples_to_pcm16_bytes(chunks: list[list[float]]) -> bytes:
+    pcm = array.array("h")
+    for row in chunks:
+        for val in row:
+            if val > 1.0:
+                val = 1.0
+            elif val < -1.0:
+                val = -1.0
+            pcm.append(int(val * 32767.0))
+    return pcm.tobytes()
 
 
 class SystemAudioRecorderApp:
@@ -44,7 +55,7 @@ class SystemAudioRecorderApp:
 
         self.is_recording = False
         self.record_thread: threading.Thread | None = None
-        self.audio_frames: list[np.ndarray] = []
+        self.audio_rows: list[list[float]] = []
         self.sample_rate = 48000
         self.channels = 2
 
@@ -124,7 +135,7 @@ class SystemAudioRecorderApp:
             messagebox.showerror("ข้อผิดพลาดอุปกรณ์เสียง", f"ไม่สามารถเข้าถึงเสียงลำโพงได้:\n{exc}")
             return
 
-        self.audio_frames = []
+        self.audio_rows = []
         self.is_recording = True
         self.record_btn.config(state=tk.DISABLED, bg="#4B5563")
         self.stop_btn.config(state=tk.NORMAL, bg="#DC2626")
@@ -143,7 +154,7 @@ class SystemAudioRecorderApp:
                 while self.is_recording:
                     data = rec.record(numframes=4096)
                     if data is not None and len(data) > 0:
-                        self.audio_frames.append(data.copy())
+                        self.audio_rows.extend(data.tolist())
         except Exception as exc:
             self.root.after(0, lambda: self._on_record_error(str(exc)))
 
@@ -168,14 +179,12 @@ class SystemAudioRecorderApp:
         if self.record_thread and self.record_thread.is_alive():
             self.record_thread.join(timeout=3)
 
-        if not self.audio_frames:
+        if not self.audio_rows:
             self.root.after(0, lambda: self._finish_ui("ไม่มีข้อมูลเสียงที่บันทึกได้", "#F87171"))
             return
 
         try:
-            audio_np = np.concatenate(self.audio_frames, axis=0)
-            audio_np = np.clip(audio_np, -1.0, 1.0)
-            pcm_16bit = (audio_np * 32767.0).astype(np.int16)
+            pcm_bytes = float_samples_to_pcm16_bytes(self.audio_rows)
 
             out_dir = get_app_dir()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -184,9 +193,9 @@ class SystemAudioRecorderApp:
 
             with wave.open(temp_wav, "wb") as wf:
                 wf.setnchannels(self.channels)
-                wf.setsampwidth(2)  # 16-bit PCM
+                wf.setsampwidth(2)
                 wf.setframerate(self.sample_rate)
-                wf.writeframes(pcm_16bit.tobytes())
+                wf.writeframes(pcm_bytes)
 
             ffmpeg_path = find_ffmpeg()
             cmd = [
