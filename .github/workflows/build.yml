@@ -1,0 +1,50 @@
+name: Build Windows MP3 Recorder EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install soundcard numpy pyinstaller
+
+      - name: Download FFmpeg static binary for Windows
+        shell: pwsh
+        run: |
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile "ffmpeg.zip"
+          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_extract" -Force
+          $exePath = Get-ChildItem -Path "ffmpeg_extract" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          Copy-Item -Path $exePath -Destination "ffmpeg.exe" -Force
+
+      - name: Build EXE with PyInstaller
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name "SpeakerRecorder" recorder.py
+          copy ffmpeg.exe dist\SpeakerRecorder\ffmpeg.exe
+
+      - name: Package ZIP artifact
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\SpeakerRecorder\*" -DestinationPath "SpeakerRecorder-Windows.zip" -Force
+
+      - name: Upload EXE ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpeakerRecorder-Windows
+          path: SpeakerRecorder-Windows.zip
